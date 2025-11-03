@@ -1,0 +1,99 @@
+<!doctype html>
+<html>
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Cesium Map App</title>
+  <style>
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+    }
+
+    #cesiumContainer {
+      width: 100%;
+      height: 100%;
+      position: absolute;
+      top: 0;
+      left: 0;
+      bottom: 0;
+      right: 0;
+    }
+
+    .toolbar {
+      position: absolute;
+      top: 12px;
+      left: 12px;
+      z-index: 1000;
+    }
+
+  </style>
+</head>
+
+<body class="calcite-mode-auto">
+
+  <div id="cesiumContainer"></div>
+
+  <div class="toolbar">
+
+    <calcite-action-bar layout="vertical" overflow-actions-disabled="true" overlay-positioning="absolute" scale="s" calcite-hydrated="" auto-close="true">
+      <calcite-action-group layout="horizontal" overlay-positioning="absolute" scale="s" calcite-hydrated="">
+        <calcite-action id="pointer-select" text="Select feature" appearance="solid" scale="s" width="auto" type="button" icon="cursor" calcite-hydrated="" active=""></calcite-action>
+        <calcite-action id="rectangle-select" text="Select by rectangle" appearance="solid" scale="s" width="auto" type="button" icon="cursor-marquee" calcite-hydrated=""></calcite-action>
+        <calcite-action id="lasso-select" text="Select by lasso" appearance="solid" scale="s" width="auto" type="button" icon="lasso-select" calcite-hydrated=""></calcite-action>
+      </calcite-action-group>
+      <calcite-action-group layout="horizontal" overlay-positioning="absolute" scale="s" calcite-hydrated="">
+        <calcite-action id="draw-point" text="Draw a point" appearance="solid" scale="s" width="auto" type="button" icon="pin" calcite-hydrated=""></calcite-action>
+        <calcite-action id="draw-line" text="Draw a polyline" appearance="solid" scale="s" width="auto" type="button" icon="line" calcite-hydrated=""></calcite-action>
+        <calcite-action id="draw-polygon" text="Draw a polygon" appearance="solid" scale="s" width="auto" type="button" icon="polygon" calcite-hydrated=""></calcite-action>
+        <calcite-action id="draw-rectangle" text="Draw a rectangle" appearance="solid" scale="s" width="auto" type="button" icon="rectangle" calcite-hydrated=""></calcite-action>
+        <calcite-action id="draw-circle" text="Draw a circle" appearance="solid" scale="s" width="auto" type="button" icon="circle" calcite-hydrated=""></calcite-action>
+      </calcite-action-group>
+      <calcite-action-group layout="horizontal" overlay-positioning="absolute" scale="s" calcite-hydrated="">
+        <calcite-action id="draw-cancel" text="Cancel drawing" appearance="solid" scale="s" width="auto" type="button" icon="x" calcite-hydrated=""></calcite-action>
+        <calcite-action id="undo-button" text="Undo" appearance="solid" disabled="" icon-flip-rtl="" scale="s" width="auto" type="button" icon="undo" aria-disabled="true" calcite-hydrated=""></calcite-action>
+        <calcite-action id="redo-button" text="Redo" appearance="solid" disabled="" icon-flip-rtl="" scale="s" width="auto" type="button" icon="redo" aria-disabled="true" calcite-hydrated=""></calcite-action>
+      </calcite-action-group>
+      <calcite-action-group layout="horizontal" overlay-positioning="absolute" scale="s" calcite-hydrated="">
+        <calcite-action id="settings-menu-action" text="Settings" aria-expanded="true" appearance="solid" scale="s" width="auto" type="button" icon="gear" calcite-hydrated=""></calcite-action>
+      </calcite-action-group>
+    </calcite-action-bar>
+
+    <calcite-popover id="settings-popover" reference-element="settings-menu-action"  overlay-positioning="absolute" scale="s" auto-close="true">
+      <calcite-panel heading="">
+        <calcite-block expanded heading="Draw Options" description="Configure snap, auto-close, and extrusion" icon-start="effects">
+          <calcite-label layout="inline-space-between">
+            Snap (polygon) <calcite-switch id="snap-switch" checked></calcite-switch>
+          </calcite-label>
+          <calcite-label layout="inline-space-between">
+            Polygon auto-close <calcite-switch id="autoclose-switch" checked ></calcite-switch>
+          </calcite-label>
+          <calcite-label>
+            Extruded height (m) <calcite-slider id="extrude-slider" min="0" max="2000" step="10" value="0" labeled></calcite-slider>
+          </calcite-label>
+        </calcite-block>
+      </calcite-panel>
+    </calcite-popover>
+
+  </div>
+
+
+
+  <script src="public/vendor/qwebchannel.js"></script>
+
+  <script src="public/vendor/tv4.js"></script>
+  <script src="public/vendor/cmapi.schema.js"></script>
+  <script src="public/vendor/cmapi.descriptions.js"></script>
+  <script src="public/vendor/cmapi.examples.js"></script>
+  <script src="public/vendor/cmapi.notes.js"></script>
+  <script src="public/vendor/cmajs.js"></script>
+
+  <script type="module" src="src/client/main.ts"></script>
+</body>
+
+</html>
