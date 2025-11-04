@@ -1,9 +1,9 @@
-import { Viewer, SceneMode, MapMode2D, WebMercatorProjection, Cartesian3, OpenStreetMapImageryProvider } from 'cesium';
+import { Viewer, SceneMode, MapMode2D, WebMercatorProjection, Cartesian3, OpenStreetMapImageryProvider, Terrain } from 'cesium';
 import CesiumNavigation from 'cesium-navigation-es6';
 
 export function createViewer(containerId: string): Viewer {
   const viewer = new Viewer(containerId, {
-    terrainProvider: undefined,
+    terrain: Terrain.fromWorldTerrain(),
     animation: false,
     baseLayerPicker: false,
     fullscreenButton: false,
