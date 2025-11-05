@@ -1,4 +1,4 @@
-import { Viewer, SceneMode, MapMode2D, WebMercatorProjection, Cartesian3, OpenStreetMapImageryProvider, Terrain } from 'cesium';
+import { Viewer, SceneMode, MapMode2D, WebMercatorProjection, Cartesian3, OpenStreetMapImageryProvider, Terrain, JulianDate, IonImageryProvider } from 'cesium';
 import CesiumNavigation from 'cesium-navigation-es6';
 
 export function createViewer(containerId: string): Viewer {
@@ -19,16 +19,24 @@ export function createViewer(containerId: string): Viewer {
     mapMode2D: MapMode2D.ROTATE
   });
 
-  // OpenStreetMap imagery provider
   viewer.imageryLayers.removeAll();
   viewer.imageryLayers.addImageryProvider(new OpenStreetMapImageryProvider({
     url: 'https://tile.openstreetmap.org/'
   }));
 
-  // 2D rotasyonu aktif et
+  IonImageryProvider.fromAssetId(3812).then((nightProvider) => {
+    const nightLayer = viewer.imageryLayers.addImageryProvider(nightProvider);
+    nightLayer.nightAlpha = 1.0;
+    nightLayer.dayAlpha = 0.0; 
+  });
+
   viewer.scene.screenSpaceCameraController.enableRotate = true;
 
-  // Navigation widget
+  viewer.scene.globe.enableLighting = true;
+  
+  viewer.clock.shouldAnimate = true; 
+  viewer.clock.multiplier = 1; 
+
   new CesiumNavigation(viewer, {
     enableCompass: true,
     enableZoomControls: true,

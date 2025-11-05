@@ -19,28 +19,28 @@ defineCalcite(window);
 const viewer = createViewer('cesiumContainer');
 window.cesiumView = viewer;
 
-const draw = new DrawManager(viewer);
+const drawManager = new DrawManager(viewer);
 
 document.getElementById('draw-line')?.addEventListener('click', async () => {
-  try { await draw.drawPolyline(); } catch {}
+  try { await drawManager.drawPolyline(); } catch {}
 });
 document.getElementById('draw-polygon')?.addEventListener('click', async () => {
-  try { await draw.drawPolygon(); } catch {}
+  try { await drawManager.drawPolygon(); } catch {}
 });
 document.getElementById('draw-rectangle')?.addEventListener('click', async () => {
-  try { await draw.drawRectangle(); } catch {}
+  try { await drawManager.drawRectangle(); } catch {}
 });
 document.getElementById('draw-circle')?.addEventListener('click', async () => {
-  try { await draw.drawCircle(); } catch {}
+  try { await drawManager.drawCircle(); } catch {}
 });
-document.getElementById('draw-cancel')?.addEventListener('click', () => draw.cancel());
+document.getElementById('draw-cancel')?.addEventListener('click', () => drawManager.cancel());
 
 const snapSwitch = document.getElementById('snap-switch') as any;
 if (snapSwitch) {
   snapSwitch.checked = true;
   snapSwitch.addEventListener('calciteSwitchChange', (e: any) => {
     const enabled = (e.target as any).checked;
-    draw.setOptions({ snap: { enabled } });
+    drawManager.setOptions({ snap: { enabled } });
   });
 }
 
@@ -49,7 +49,7 @@ if (autoCloseSwitch) {
   autoCloseSwitch.checked = true;
   autoCloseSwitch.addEventListener('calciteSwitchChange', (e: any) => {
     const enabled = (e.target as any).checked;
-    draw.setOptions({ autoClosePolygon: enabled });
+    drawManager.setOptions({ autoClosePolygon: enabled });
   });
 }
 
@@ -57,7 +57,7 @@ const extrudeSlider = document.getElementById('extrude-slider') as any;
 if (extrudeSlider) {
   extrudeSlider.addEventListener('calciteSliderChange', (e: any) => {
     const val = Number((e.target as any).value ?? 0);
-    draw.setOptions({ extrudedHeight: val > 0 ? val : undefined });
+    drawManager.setOptions({ extrudedHeight: val > 0 ? val : undefined });
   });
 }
 
