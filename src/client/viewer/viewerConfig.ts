@@ -1,7 +1,10 @@
-import { Viewer, SceneMode, MapMode2D, WebMercatorProjection, Cartesian3, OpenStreetMapImageryProvider, Terrain, JulianDate, IonImageryProvider } from 'cesium';
+import { Viewer, SceneMode, MapMode2D, WebMercatorProjection, Cartesian3, OpenStreetMapImageryProvider, Terrain, JulianDate, IonImageryProvider, Ion } from 'cesium';
 import CesiumNavigation from 'cesium-navigation-es6';
 
 export function createViewer(containerId: string): Viewer {
+  // Set default access token to avoid storage access issues
+  //Ion.defaultAccessToken = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJqdGkiOiI5N2UyMjcwOS00MDY1LTQxYjEtYjZjMy00YTU0ZTg1YmU2YmEiLCJpZCI6ODA3MzQsImlhdCI6MTY0Mjc0ODk2Mn0.dkwAL1CcljUV7NA7fDbhXXnmyZQU_c-G5zRx8PtEcxE';
+
   const viewer = new Viewer(containerId, {
     terrain: Terrain.fromWorldTerrain(),
     animation: false,
@@ -35,6 +38,7 @@ export function createViewer(containerId: string): Viewer {
   viewer.scene.globe.enableLighting = true;
   
   viewer.clock.shouldAnimate = true; 
+  viewer.clock.currentTime = JulianDate.fromDate(new Date('2025-11-03T14:00:00Z'));
   viewer.clock.multiplier = 1; 
 
   new CesiumNavigation(viewer, {

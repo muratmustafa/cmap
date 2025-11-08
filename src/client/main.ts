@@ -21,6 +21,9 @@ window.cesiumView = viewer;
 
 const drawManager = new DrawManager(viewer);
 
+document.getElementById('draw-point')?.addEventListener('click', async () => {
+  try { await drawManager.drawPoint(); } catch {}
+});
 document.getElementById('draw-line')?.addEventListener('click', async () => {
   try { await drawManager.drawPolyline(); } catch {}
 });

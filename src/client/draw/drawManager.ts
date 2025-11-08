@@ -1,7 +1,7 @@
 import { Viewer, ScreenSpaceEventHandler, ScreenSpaceEventType, Cartesian2, Cartesian3, Color, Entity, PolylineGraphics, PolygonHierarchy, CallbackProperty, Cartographic, Rectangle, EllipsoidGeodesic, ConstantPositionProperty } from 'cesium';
 import { screenToCartographic } from '../utils/coordinates';
 
-export type DrawMode = 'polyline' | 'polygon' | 'rectangle' | 'circle';
+export type DrawMode = 'point' | 'polyline' | 'polygon' | 'rectangle' | 'circle';
 
 export interface DrawStyle {
   strokeColor?: Color;
@@ -14,6 +14,8 @@ export interface SnapOptions {
   pixelTolerance?: number;
   toVertices?: boolean;
   toFirstVertex?: boolean;
+  toEdges?: boolean;
+  toCirclePerimeter?: boolean;
 }
 
 export interface DrawOptions {
@@ -22,6 +24,23 @@ export interface DrawOptions {
   extrudedHeight?: number;
 }
 
+interface GeometryRecord {
+  kind: 'point' | 'polyline' | 'polygon' | 'rectangle' | 'circle';
+  positions?: Cartesian3[];
+  corners?: Cartesian3[];
+  center?: Cartesian3;
+  radiusMeters?: number;
+}
+
+/**
+ * DrawManager - Manages interactive drawing on Cesium viewer
+ * 
+ * Responsibilities:
+ * - Create preview and final entities for different draw modes
+ * - Handle mouse interactions (move, click, right-click)
+ * - Apply snapping to vertices, edges, and perimeters
+ * - Store completed geometries for snapping reference
+ */
 export class DrawManager {
   private viewer: Viewer;
   private handler: ScreenSpaceEventHandler | null = null;
@@ -29,9 +48,20 @@ export class DrawManager {
   private activeMode: DrawMode | null = null;
   private positions: Cartesian3[] = [];
   private cleanupFns: Array<() => void> = [];
+  
+  // Snapping data
+  private allVertices: Cartesian3[] = [];
+  private allGeometries: GeometryRecord[] = [];
 
   private defaultOptions: DrawOptions = {
-    snap: { enabled: true, pixelTolerance: 20, toVertices: true, toFirstVertex: true },
+    snap: { 
+      enabled: true, 
+      pixelTolerance: 20, 
+      toVertices: true, 
+      toFirstVertex: true, 
+      toEdges: true, 
+      toCirclePerimeter: true 
+    },
     autoClosePolygon: true
   };
 
@@ -40,7 +70,6 @@ export class DrawManager {
   }
 
   setOptions(options: DrawOptions) {
-    // shallow merge
     this.defaultOptions = {
       ...this.defaultOptions,
       ...options,
@@ -48,13 +77,16 @@ export class DrawManager {
     };
   }
 
-
-
   cancel() {
     if (this.activeEntity) {
       this.viewer.entities.remove(this.activeEntity);
     }
     this.teardown();
+  }
+
+  // Public draw methods
+  async drawPoint(style: DrawStyle = {}, options?: DrawOptions): Promise<Entity> {
+    return this.startDraw('point', style, options);
   }
 
   async drawPolyline(style: DrawStyle = {}, options?: DrawOptions): Promise<Entity> {
@@ -73,260 +105,598 @@ export class DrawManager {
     return this.startDraw('circle', style, options);
   }
 
+  /**
+   * Main draw orchestration method
+   */
   private startDraw(mode: DrawMode, style: DrawStyle, options?: DrawOptions): Promise<Entity> {
     if (this.activeMode) {
-      // if already drawing, cancel previous
       this.teardown();
     }
 
-  this.activeMode = mode;
-  // Create a fresh positions array per draw session and close over it
-  const draftPositions: Cartesian3[] = [];
-  // positionsRef is what all CallbackProperty closures read; we can swap it atomically at finish
-  let positionsRef: Cartesian3[] = draftPositions;
-  this.positions = draftPositions;
+    this.activeMode = mode;
+    const draftPositions: Cartesian3[] = [];
+    const opts = this.mergeOptions(options);
+    const colors = this.getColors(style);
 
-  const opts: DrawOptions = {
+    // Create preview point (yellow dot at cursor)
+    const previewPoint = this.createPreviewPoint(draftPositions, mode, colors.previewColor);
+    
+    // Create main drawing entity
+    this.activeEntity = this.createDrawingEntity(mode, draftPositions, colors, opts);
+
+    return new Promise<Entity>((resolve, reject) => {
+      const handleFinish = () => this.finishDrawing(mode, draftPositions, previewPoint, resolve);
+      const handleCancel = () => this.cancelDrawing(previewPoint, reject);
+
+      this.setupEventHandlers(mode, draftPositions, opts, handleFinish, handleCancel);
+    });
+  }
+
+  /**
+   * Merge user options with defaults
+   */
+  private mergeOptions(options?: DrawOptions): DrawOptions {
+    return {
       ...this.defaultOptions,
       ...options,
       snap: { ...this.defaultOptions.snap, ...options?.snap }
     };
+  }
 
-    const strokeColor = style.strokeColor ?? Color.CYAN.withAlpha(0.9);
-    const fillColor = style.fillColor ?? Color.CYAN.withAlpha(0.1);
-    const strokeWidth = style.strokeWidth ?? 4;
-    // Outline için koyu, tam opak renk
-    const outlineColor = Color.fromBytes(0, 139, 139, 255);
+  /**
+   * Get colors for drawing
+   */
+  private getColors(style: DrawStyle) {
+    return {
+      strokeColor: style.strokeColor ?? Color.CYAN.withAlpha(0.9),
+      fillColor: style.fillColor ?? Color.CYAN.withAlpha(0.1),
+      strokeWidth: style.strokeWidth ?? 4,
+      outlineColor: Color.fromBytes(0, 139, 139, 255),
+      previewColor: Color.YELLOW.withAlpha(0.8),
+      pointColor: style.strokeColor ?? Color.CYAN.withAlpha(1.0),
+      pixelSize: style.strokeWidth ?? 10
+    };
+  }
 
-    // Create dynamic entity depending on mode
-    switch (mode) {
-      case 'polyline':
-        this.activeEntity = this.viewer.entities.add({
-          polyline: new PolylineGraphics({
-            material: strokeColor,
-            width: strokeWidth,
-            positions: new CallbackProperty(() => positionsRef, false)
-          })
-        });
-        break;
-      case 'polygon':
-        this.activeEntity = this.viewer.entities.add({
-          polygon: {
-            hierarchy: new CallbackProperty(() => new PolygonHierarchy(positionsRef), false),
-            material: fillColor,
-            outline: true,
-            outlineColor: outlineColor,
-            height: 0, // Outline'ların görünmesi için terrain clamping'i devre dışı bırak
-            extrudedHeight: opts?.extrudedHeight
-          }
-        });
-        break;
-      case 'rectangle':
-        this.activeEntity = this.viewer.entities.add({
-          rectangle: {
-            coordinates: new CallbackProperty(() => this.rectangleFromPositions(positionsRef), false),
-            material: fillColor,
-            outline: true,
-            outlineColor: outlineColor,
-            height: 0, // Outline'ların görünmesi için terrain clamping'i devre dışı bırak
-            extrudedHeight: opts?.extrudedHeight
-          }
-        });
-        break;
-      case 'circle':
-        this.activeEntity = this.viewer.entities.add({
-          ellipse: {
-            semiMajorAxis: new CallbackProperty(() => this.computeCircleRadiusMeters(positionsRef), false),
-            semiMinorAxis: new CallbackProperty(() => this.computeCircleRadiusMeters(positionsRef), false),
-            material: fillColor,
-            outline: true,
-            granularity: Math.PI / 180, // 1° açı = performanslı ve pürüzsüz
-            outlineColor: outlineColor,
-            height: 0, // Outline'ların görünmesi için terrain clamping'i devre dışı bırak
-            extrudedHeight: opts?.extrudedHeight
-          }
-        });
-        break;
-    }
-
-    
-
-    // Prepare promise to resolve when completed
-    return new Promise<Entity>((resolve, reject) => {
-      // Finish handler (completes drawing and freezes geometry)
-      const finish = () => {
-        // Validate minimum points
-        if (mode === 'polyline' && draftPositions.length < 2) return;
-        if (mode === 'polygon' && draftPositions.length < 3) return;
-        if ((mode === 'rectangle' || mode === 'circle') && draftPositions.length < 2) return;
-
-        // Build final immutable coordinates and atomically swap data provider
-        const finalPositions = (mode === 'polyline' || mode === 'polygon')
-          ? draftPositions.slice(0, -1)
-          : draftPositions.slice();
-
-        positionsRef = finalPositions; // callbacks now return static array
-
-        const entity = this.activeEntity!;
-        this.teardown();
-        resolve(entity);
-      };
-
-      this.handler = new ScreenSpaceEventHandler(this.viewer.canvas);
-
-      // Left click: add anchor (with optional snapping and polygon auto-close)
-      this.handler.setInputAction((movement: any) => {
-        const screenPos = movement.position as Cartesian2;
-        const carto = screenToCartographic(this.viewer, screenPos);
-        if (!carto) return;
-        let pos = Cartesian3.fromRadians(carto.longitude, carto.latitude, carto.height ?? 0);
-
-        // Snapping (sadece polygon için): snap to closest existing vertex within tolerance
-        if (mode === 'polygon' && opts.snap?.enabled) {
-          const anchors = draftPositions.slice(0, Math.max(0, draftPositions.length - 1));
-          const snapped = this.trySnapToVertices(screenPos, anchors, opts.snap);
-          if (snapped) pos = snapped;
-        }
-        if (draftPositions.length === 0) {
-          draftPositions.push(pos);
-          // For polyline/polygon add a duplicate for dynamic update
-          if (mode === 'polyline' || mode === 'polygon') {
-            draftPositions.push(pos.clone());
-          }
-          if (mode === 'rectangle' || mode === 'circle') {
-            draftPositions.push(pos.clone()); // second point to be updated by mouse move
-          }
-          if (mode === 'circle' && this.activeEntity) {
-            this.activeEntity.position = new ConstantPositionProperty(pos);
-          }
-        } else {
-          if (mode === 'rectangle' || mode === 'circle') {
-            // For rectangle/circle, second left click should complete
-            draftPositions[draftPositions.length - 1] = pos; // update trailing point
-            finish();
-            return;
-          } else {
-            // Polygon auto-close: if click near first vertex, finalize
-            if (mode === 'polygon' && opts.autoClosePolygon && draftPositions.length >= 3) {
-              const first = draftPositions[0];
-              const firstCanvas = this.viewer.scene.cartesianToCanvasCoordinates(first);
-              const dist = firstCanvas ? Cartesian2.distance(firstCanvas, screenPos) : Number.MAX_VALUE;
-              if (dist <= (opts.snap?.pixelTolerance ?? 20)) {  // opts'tan kullan
-                draftPositions[draftPositions.length - 1] = first; // lock to first vertex
-                finish();
-                return;
-              }
-            }
-            // For polyline/polygon: lock current dynamic to clicked point, then add new dynamic point
-            draftPositions[draftPositions.length - 1] = pos; // lock previous dynamic as anchor
-            draftPositions.push(pos.clone()); // new dynamic point follows the mouse
-          }
-        }
-      }, ScreenSpaceEventType.LEFT_CLICK);
-
-      // Mouse move: update last position (with optional snapping)
-      this.handler.setInputAction((movement: any) => {
-        if (draftPositions.length === 0) return;
-        const screenPos = movement.endPosition as Cartesian2;
-        const carto = screenToCartographic(this.viewer, screenPos);
-        if (!carto) return;
-        let pos = Cartesian3.fromRadians(carto.longitude, carto.latitude, carto.height ?? 0);
-
-        if (mode === 'polygon' && opts.snap?.enabled) {
-          const anchors = draftPositions.slice(0, Math.max(0, draftPositions.length - 1));
-          const snapped = this.trySnapToVertices(screenPos, anchors, opts.snap);
-          if (snapped) pos = snapped;
-        }
-        // Update the last point for dynamic drafting
-        draftPositions[draftPositions.length - 1] = pos;
-        if (this.activeMode === 'circle' && this.activeEntity && draftPositions[0]) {
-          this.activeEntity.position = new ConstantPositionProperty(draftPositions[0]);
-        }
-      }, ScreenSpaceEventType.MOUSE_MOVE);
-
-      // Right click: finalize at current cursor position
-      this.handler.setInputAction((movement: any) => {
-        // Update trailing point to current click position
-        if (draftPositions.length > 0) {
-          const carto = screenToCartographic(this.viewer, movement.position as Cartesian2);
-          if (carto) {
-            const pos = Cartesian3.fromRadians(carto.longitude, carto.latitude, carto.height ?? 0);
-            draftPositions[draftPositions.length - 1] = pos;
-            // For polyline/polygon ensure last selected point is preserved after finish()
-            if (this.activeMode === 'polyline' || this.activeMode === 'polygon') {
-              draftPositions.push(pos.clone());
-            }
-          }
-        }
-        finish();
-      }, ScreenSpaceEventType.RIGHT_CLICK);
-
-      // Double click: finalize at current cursor position
-      this.handler.setInputAction((movement: any) => {
-        if (draftPositions.length > 0) {
-          const carto = screenToCartographic(this.viewer, movement.position as Cartesian2);
-          if (carto) {
-            const pos = Cartesian3.fromRadians(carto.longitude, carto.latitude, carto.height ?? 0);
-            draftPositions[draftPositions.length - 1] = pos;
-            if (this.activeMode === 'polyline' || this.activeMode === 'polygon') {
-              draftPositions.push(pos.clone());
-            }
-          }
-        }
-        finish();
-      }, ScreenSpaceEventType.LEFT_DOUBLE_CLICK);
-
-      // Cancel on ESC
-      const keydown = (e: KeyboardEvent) => {
-        if (e.key === 'Escape') {
-          this.viewer.entities.remove(this.activeEntity!);
-          this.teardown();
-          reject(new Error('Draw cancelled'));
-        }
-      };
-      window.addEventListener('keydown', keydown);
-      this.cleanupFns.push(() => window.removeEventListener('keydown', keydown));
+  /**
+   * Create preview point entity (yellow cursor follower)
+   */
+  private createPreviewPoint(positions: Cartesian3[], mode: DrawMode, color: Color): Entity {
+    return this.viewer.entities.add({
+      position: new CallbackProperty(() => positions[positions.length - 1], false) as any,
+      point: {
+        pixelSize: 8,
+        color,
+        outlineColor: Color.BLACK,
+        outlineWidth: 1,
+        show: new CallbackProperty(() => this.shouldShowPreview(mode, positions), false) as any
+      }
     });
   }
 
-  private rectangleFromPositions(positions: Cartesian3[] = this.positions): Rectangle | undefined {
-    if (positions.length < 2) return undefined;
-    const c1 = Cartographic.fromCartesian(positions[0]);
-    const c2 = Cartographic.fromCartesian(positions[positions.length - 1]);
-    const west = Math.min(c1.longitude, c2.longitude);
-    const south = Math.min(c1.latitude, c2.latitude);
-    const east = Math.max(c1.longitude, c2.longitude);
-    const north = Math.max(c1.latitude, c2.latitude);
-    return Rectangle.fromRadians(west, south, east, north);
+  /**
+   * Determine if preview point should be visible
+   */
+  private shouldShowPreview(mode: DrawMode, positions: Cartesian3[]): boolean {
+    if (mode === 'point') return positions.length > 0;
+    if (mode === 'polyline' || mode === 'polygon') return positions.length > 0;
+    if (mode === 'rectangle' || mode === 'circle') return positions.length <= 2;
+    return false;
   }
 
-  private computeCircleRadiusMeters(positions: Cartesian3[] = this.positions): number | undefined {
-    if (positions.length < 2) return undefined;
-    const c1 = Cartographic.fromCartesian(positions[0]);
-    const c2 = Cartographic.fromCartesian(positions[positions.length - 1]);
-    const geod = new EllipsoidGeodesic(c1, c2);
-    const meters = geod.surfaceDistance;
-    return Math.max(1, meters);
+  /**
+   * Create the main drawing entity based on mode
+   */
+  private createDrawingEntity(
+    mode: DrawMode, 
+    positions: Cartesian3[], 
+    colors: any, 
+    opts: DrawOptions
+  ): Entity {
+    switch (mode) {
+      case 'point':
+        return this.createPointEntity(positions, colors);
+      case 'polyline':
+        return this.createPolylineEntity(positions, colors);
+      case 'polygon':
+        return this.createPolygonEntity(positions, colors, opts);
+      case 'rectangle':
+        return this.createRectangleEntity(positions, colors, opts);
+      case 'circle':
+        return this.createCircleEntity(positions, colors, opts);
+    }
   }
 
-  // Try snap to nearest existing vertex within pixel tolerance; returns snapped Cartesian or null
-  private trySnapToVertices(screenPos: Cartesian2, anchors: Cartesian3[], snap?: SnapOptions): Cartesian3 | null {
-    if (!snap?.enabled || !anchors.length) return null;
-    const tol = snap.pixelTolerance ?? 10;
-    let bestDist = Number.MAX_VALUE;
-    let best: Cartesian3 | null = null;
-    for (const a of anchors) {
-      const canvas = this.viewer.scene.cartesianToCanvasCoordinates(a);
-      if (!canvas) continue;
-      const d = Cartesian2.distance(canvas, screenPos);
-      if (d <= tol && d < bestDist) {
-        bestDist = d;
-        best = a;
+  private createPointEntity(positions: Cartesian3[], colors: any): Entity {
+    return this.viewer.entities.add({
+      position: new CallbackProperty(() => positions[positions.length - 1], false) as any,
+      point: {
+        pixelSize: colors.pixelSize,
+        color: colors.pointColor,
+        outlineColor: colors.outlineColor,
+        outlineWidth: 1
+      }
+    });
+  }
+
+  private createPolylineEntity(positions: Cartesian3[], colors: any): Entity {
+    return this.viewer.entities.add({
+      polyline: new PolylineGraphics({
+        material: colors.strokeColor,
+        width: colors.strokeWidth,
+        positions: new CallbackProperty(() => positions, false)
+      })
+    });
+  }
+
+  private createPolygonEntity(positions: Cartesian3[], colors: any, opts: DrawOptions): Entity {
+    return this.viewer.entities.add({
+      polygon: {
+        hierarchy: new CallbackProperty(() => new PolygonHierarchy(positions), false),
+        material: colors.fillColor,
+        outline: true,
+        outlineColor: colors.outlineColor,
+        height: 0,
+        extrudedHeight: opts?.extrudedHeight
+      }
+    });
+  }
+
+  private createRectangleEntity(positions: Cartesian3[], colors: any, opts: DrawOptions): Entity {
+    return this.viewer.entities.add({
+      rectangle: {
+        coordinates: new CallbackProperty(() => {
+          if (positions.length < 2) return undefined;
+          const c1 = Cartographic.fromCartesian(positions[0]);
+          const c2 = Cartographic.fromCartesian(positions[positions.length - 1]);
+          return Rectangle.fromRadians(
+            Math.min(c1.longitude, c2.longitude),
+            Math.min(c1.latitude, c2.latitude),
+            Math.max(c1.longitude, c2.longitude),
+            Math.max(c1.latitude, c2.latitude)
+          );
+        }, false),
+        material: colors.fillColor,
+        outline: true,
+        outlineColor: colors.outlineColor,
+        height: 0,
+        extrudedHeight: opts?.extrudedHeight
+      }
+    });
+  }
+
+  private createCircleEntity(positions: Cartesian3[], colors: any, opts: DrawOptions): Entity {
+    const computeRadius = () => {
+      if (positions.length < 2) return undefined;
+      const c1 = Cartographic.fromCartesian(positions[0]);
+      const c2 = Cartographic.fromCartesian(positions[positions.length - 1]);
+      const geod = new EllipsoidGeodesic(c1, c2);
+      return Math.max(1, geod.surfaceDistance);
+    };
+
+    return this.viewer.entities.add({
+      ellipse: {
+        semiMajorAxis: new CallbackProperty(computeRadius, false),
+        semiMinorAxis: new CallbackProperty(computeRadius, false),
+        material: colors.fillColor,
+        outline: true,
+        granularity: Math.PI / 180,
+        outlineColor: colors.outlineColor,
+        height: 0,
+        extrudedHeight: opts?.extrudedHeight
+      }
+    });
+  }
+
+  /**
+   * Setup all mouse event handlers
+   */
+  private setupEventHandlers(
+    mode: DrawMode,
+    positions: Cartesian3[],
+    opts: DrawOptions,
+    onFinish: () => void,
+    onCancel: () => void
+  ) {
+    this.handler = new ScreenSpaceEventHandler(this.viewer.canvas);
+
+    // Mouse move - update cursor position
+    this.handler.setInputAction((movement: any) => {
+      this.handleMouseMove(movement, mode, positions, opts);
+    }, ScreenSpaceEventType.MOUSE_MOVE);
+
+    // Left click - add point
+    this.handler.setInputAction((movement: any) => {
+      this.handleLeftClick(movement, mode, positions, opts, onFinish);
+    }, ScreenSpaceEventType.LEFT_CLICK);
+
+    // Right click - finish drawing
+    this.handler.setInputAction((movement: any) => {
+      this.handleRightClick(movement, mode, positions, onFinish);
+    }, ScreenSpaceEventType.RIGHT_CLICK);
+
+    // Double click - finish drawing
+    this.handler.setInputAction((movement: any) => {
+      this.handleDoubleClick(movement, mode, positions, onFinish);
+    }, ScreenSpaceEventType.LEFT_DOUBLE_CLICK);
+
+    // ESC key - cancel
+    this.setupCancelHandler(onCancel);
+  }
+
+  /**
+   * Handle mouse move - update preview position
+   */
+  private handleMouseMove(movement: any, mode: DrawMode, positions: Cartesian3[], opts: DrawOptions) {
+    const pos = this.getWorldPosition(movement.endPosition);
+    if (!pos) return;
+
+    const snappedPos = this.applySnapping(movement.endPosition, pos, mode, positions, opts);
+    
+    if (positions.length === 0) {
+      positions.push(snappedPos);
+    } else {
+      positions[positions.length - 1] = snappedPos;
+    }
+
+    // Update circle center position
+    if (mode === 'circle' && this.activeEntity && positions[0]) {
+      this.activeEntity.position = new ConstantPositionProperty(positions[0]);
+    }
+  }
+
+  /**
+   * Handle left click - add anchor point
+   */
+  private handleLeftClick(
+    movement: any, 
+    mode: DrawMode, 
+    positions: Cartesian3[], 
+    opts: DrawOptions,
+    onFinish: () => void
+  ) {
+    const pos = this.getWorldPosition(movement.position);
+    if (!pos) return;
+
+    const snappedPos = this.applySnapping(movement.position, pos, mode, positions, opts);
+
+    // Point mode - single click finishes
+    if (mode === 'point') {
+      if (positions.length === 0) {
+        positions.push(snappedPos);
+      } else {
+        positions[positions.length - 1] = snappedPos;
+      }
+      onFinish();
+      return;
+    }
+
+    // First click - add anchor point
+    if (positions.length <= 1) {
+      if (positions.length === 1) {
+        positions[0] = snappedPos;
+      } else {
+        positions.push(snappedPos);
+      }
+      
+      // Add trailing point for dynamic drawing
+      if (mode === 'polyline' || mode === 'polygon' || mode === 'rectangle' || mode === 'circle') {
+        positions.push(snappedPos.clone());
+      }
+
+      if (mode === 'circle' && this.activeEntity) {
+        this.activeEntity.position = new ConstantPositionProperty(snappedPos);
+      }
+      return;
+    }
+
+    // Rectangle/Circle - second click finishes
+    if (mode === 'rectangle' || mode === 'circle') {
+      positions[positions.length - 1] = snappedPos;
+      onFinish();
+      return;
+    }
+
+    // Polygon auto-close check
+    if (mode === 'polygon' && opts.autoClosePolygon && positions.length >= 3) {
+      if (this.isNearFirstVertex(positions[0], movement.position, opts)) {
+        positions[positions.length - 1] = positions[0];
+        onFinish();
+        return;
       }
     }
-    return best;
+
+    // Polyline/Polygon - add intermediate point
+    positions[positions.length - 1] = snappedPos;
+    positions.push(snappedPos.clone());
   }
 
+  /**
+   * Handle right click - finish at cursor
+   */
+  private handleRightClick(movement: any, mode: DrawMode, positions: Cartesian3[], onFinish: () => void) {
+    if (positions.length > 0) {
+      const pos = this.getWorldPosition(movement.position);
+      if (pos) {
+        positions[positions.length - 1] = pos;
+        if (mode === 'polyline' || mode === 'polygon') {
+          positions.push(pos.clone());
+        }
+      }
+    }
+    onFinish();
+  }
+
+  /**
+   * Handle double click - finish at cursor
+   */
+  private handleDoubleClick(movement: any, mode: DrawMode, positions: Cartesian3[], onFinish: () => void) {
+    if (positions.length > 0) {
+      const pos = this.getWorldPosition(movement.position);
+      if (pos) {
+        positions[positions.length - 1] = pos;
+        if (mode === 'polyline' || mode === 'polygon') {
+          positions.push(pos.clone());
+        }
+      }
+    }
+    onFinish();
+  }
+
+  /**
+   * Setup ESC key cancel handler
+   */
+  private setupCancelHandler(onCancel: () => void) {
+    const keydown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onCancel();
+      }
+    };
+    window.addEventListener('keydown', keydown);
+    this.cleanupFns.push(() => window.removeEventListener('keydown', keydown));
+  }
+
+  /**
+   * Convert screen position to world position
+   */
+  private getWorldPosition(screenPos: Cartesian2): Cartesian3 | null {
+    const carto = screenToCartographic(this.viewer, screenPos);
+    if (!carto) return null;
+    return Cartesian3.fromRadians(carto.longitude, carto.latitude, carto.height ?? 0);
+  }
+
+  /**
+   * Apply snapping to position (edges first, then vertices)
+   */
+  private applySnapping(
+    screenPos: Cartesian2, 
+    worldPos: Cartesian3, 
+    mode: DrawMode, 
+    positions: Cartesian3[], 
+    opts: DrawOptions
+  ): Cartesian3 {
+    if (!opts.snap?.enabled) return worldPos;
+
+    const anchors = (mode === 'polyline' || mode === 'polygon')
+      ? positions.slice(0, Math.max(0, positions.length - 1))
+      : [];
+
+    // Try edge/perimeter snap first
+    const edgeSnap = this.snapToBoundaries(screenPos, worldPos, anchors, opts.snap);
+    if (edgeSnap) return edgeSnap;
+
+    // Try vertex snap
+    const candidates = anchors.concat(this.allVertices);
+    const vertexSnap = this.snapToVertices(screenPos, candidates, opts.snap);
+    if (vertexSnap) return vertexSnap;
+
+    return worldPos;
+  }
+
+  /**
+   * Snap to nearest vertex
+   */
+  private snapToVertices(screenPos: Cartesian2, vertices: Cartesian3[], snap: SnapOptions): Cartesian3 | null {
+    if (!vertices.length) return null;
+    
+    const tol = snap.pixelTolerance ?? 10;
+    let best: { dist: number; vertex: Cartesian3 } | null = null;
+
+    for (const vertex of vertices) {
+      const canvas = this.viewer.scene.cartesianToCanvasCoordinates(vertex);
+      if (!canvas) continue;
+      
+      const dist = Cartesian2.distance(canvas, screenPos);
+      if (dist <= tol && (!best || dist < best.dist)) {
+        best = { dist, vertex };
+      }
+    }
+
+    return best?.vertex ?? null;
+  }
+
+  /**
+   * Snap to edges/perimeters
+   */
+  private snapToBoundaries(
+    screenPos: Cartesian2, 
+    worldGuess: Cartesian3, 
+    anchorVerts: Cartesian3[], 
+    snap: SnapOptions
+  ): Cartesian3 | null {
+    const tol = snap.pixelTolerance ?? 10;
+    let best: { dist: number; pos: Cartesian3 } | null = null;
+
+    // Helper to check edge snapping
+    const checkEdge = (A: Cartesian3, B: Cartesian3) => {
+      const canvasA = this.viewer.scene.cartesianToCanvasCoordinates(A);
+      const canvasB = this.viewer.scene.cartesianToCanvasCoordinates(B);
+      if (!canvasA || !canvasB) return;
+
+      const seg = new Cartesian2(canvasB.x - canvasA.x, canvasB.y - canvasA.y);
+      const segLen2 = seg.x * seg.x + seg.y * seg.y;
+      if (segLen2 === 0) return;
+
+      const ap = new Cartesian2(screenPos.x - canvasA.x, screenPos.y - canvasA.y);
+      let t = (ap.x * seg.x + ap.y * seg.y) / segLen2;
+      t = Math.max(0, Math.min(1, t));
+
+      const proj = new Cartesian2(canvasA.x + t * seg.x, canvasA.y + t * seg.y);
+      const dist = Cartesian2.distance(proj, screenPos);
+
+      if (dist <= tol && (!best || dist < best.dist)) {
+        const cartoA = Cartographic.fromCartesian(A);
+        const cartoB = Cartographic.fromCartesian(B);
+        const geod = new EllipsoidGeodesic(cartoA, cartoB);
+        const mid = geod.interpolateUsingFraction(t);
+        best = { dist, pos: Cartesian3.fromRadians(mid.longitude, mid.latitude, mid.height) };
+      }
+    };
+
+    // Check current drawing anchors
+    if (snap.toEdges && anchorVerts.length >= 2) {
+      for (let i = 0; i < anchorVerts.length - 1; i++) {
+        checkEdge(anchorVerts[i], anchorVerts[i + 1]);
+      }
+    }
+
+    // Check completed geometries
+    for (const geom of this.allGeometries) {
+      if (geom.kind === 'polyline' || geom.kind === 'polygon' || geom.kind === 'rectangle') {
+        const verts = geom.kind === 'rectangle' ? geom.corners! : geom.positions!;
+        const closed = geom.kind !== 'polyline';
+
+        for (let i = 0; i < verts.length - 1; i++) {
+          checkEdge(verts[i], verts[i + 1]);
+        }
+        if (closed && verts.length >= 2) {
+          checkEdge(verts[verts.length - 1], verts[0]);
+        }
+      } else if (geom.kind === 'circle' && snap.toCirclePerimeter) {
+        const centerCanvas = this.viewer.scene.cartesianToCanvasCoordinates(geom.center!);
+        if (!centerCanvas) continue;
+
+        const mouseCarto = Cartographic.fromCartesian(worldGuess);
+        const centerCarto = Cartographic.fromCartesian(geom.center!);
+        const geod = new EllipsoidGeodesic(centerCarto, mouseCarto);
+        const onCircle = geod.interpolateUsingSurfaceDistance(geom.radiusMeters!);
+        const onCircleXyz = Cartesian3.fromRadians(onCircle.longitude, onCircle.latitude, onCircle.height);
+        const onCircleCanvas = this.viewer.scene.cartesianToCanvasCoordinates(onCircleXyz);
+        
+        if (onCircleCanvas) {
+          const dist = Cartesian2.distance(onCircleCanvas, screenPos);
+          if (dist <= tol && (!best || dist < best.dist)) {
+            best = { dist, pos: onCircleXyz };
+          }
+        }
+      }
+    }
+
+    return best?.pos ?? null;
+  }
+
+  /**
+   * Check if near first vertex (for polygon auto-close)
+   */
+  private isNearFirstVertex(firstVertex: Cartesian3, screenPos: Cartesian2, opts: DrawOptions): boolean {
+    const firstCanvas = this.viewer.scene.cartesianToCanvasCoordinates(firstVertex);
+    if (!firstCanvas) return false;
+    const dist = Cartesian2.distance(firstCanvas, screenPos);
+    return dist <= (opts.snap?.pixelTolerance ?? 20);
+  }
+
+  /**
+   * Finish drawing - validate, store, cleanup
+   */
+  private finishDrawing(
+    mode: DrawMode, 
+    positions: Cartesian3[], 
+    previewPoint: Entity,
+    resolve: (entity: Entity) => void
+  ) {
+    // Validate minimum points
+    const minPoints = { point: 1, polyline: 2, polygon: 3, rectangle: 2, circle: 2 };
+    if (positions.length < minPoints[mode]) return;
+
+    // Build final positions
+    const finalPositions = (mode === 'polyline' || mode === 'polygon')
+      ? positions.slice(0, -1)
+      : positions.slice();
+
+    // Store for snapping
+    this.recordGeometry(mode, finalPositions);
+
+    // Cleanup
+    this.viewer.entities.remove(previewPoint);
+    const entity = this.activeEntity!;
+    this.teardown();
+    resolve(entity);
+  }
+
+  /**
+   * Cancel drawing
+   */
+  private cancelDrawing(previewPoint: Entity, reject: (error: Error) => void) {
+    this.viewer.entities.remove(this.activeEntity!);
+    this.viewer.entities.remove(previewPoint);
+    this.teardown();
+    reject(new Error('Draw cancelled'));
+  }
+
+  /**
+   * Record completed geometry for future snapping
+   */
+  private recordGeometry(mode: DrawMode, positions: Cartesian3[]) {
+    try {
+      if (!positions || positions.length === 0) return;
+
+      switch (mode) {
+        case 'point':
+          this.allVertices.push(positions[0]);
+          this.allGeometries.push({ kind: 'point', positions: [positions[0]] });
+          break;
+
+        case 'polyline':
+        case 'polygon':
+          this.allVertices.push(...positions);
+          this.allGeometries.push({ kind: mode, positions: positions.slice() });
+          break;
+
+        case 'rectangle': {
+          const c1 = Cartographic.fromCartesian(positions[0]);
+          const c2 = Cartographic.fromCartesian(positions[positions.length - 1]);
+          const h = ((c1.height || 0) + (c2.height || 0)) / 2;
+          const west = Math.min(c1.longitude, c2.longitude);
+          const south = Math.min(c1.latitude, c2.latitude);
+          const east = Math.max(c1.longitude, c2.longitude);
+          const north = Math.max(c1.latitude, c2.latitude);
+          const corners = [
+            Cartesian3.fromRadians(west, south, h),
+            Cartesian3.fromRadians(west, north, h),
+            Cartesian3.fromRadians(east, north, h),
+            Cartesian3.fromRadians(east, south, h)
+          ];
+          this.allVertices.push(...corners);
+          this.allGeometries.push({ kind: 'rectangle', corners });
+          break;
+        }
+
+        case 'circle': {
+          const c1 = Cartographic.fromCartesian(positions[0]);
+          const c2 = Cartographic.fromCartesian(positions[positions.length - 1]);
+          const geod = new EllipsoidGeodesic(c1, c2);
+          const radiusMeters = Math.max(1, geod.surfaceDistance);
+          this.allVertices.push(positions[0]);
+          this.allGeometries.push({ kind: 'circle', center: positions[0], radiusMeters });
+          break;
+        }
+      }
+    } catch { /* ignore */ }
+  }
+
+  /**
+   * Cleanup handlers and state
+   */
   private teardown() {
     if (this.handler) {
       this.handler.destroy();
