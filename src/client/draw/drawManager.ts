@@ -52,6 +52,10 @@ export class DrawManager {
   // Snapping data
   private allVertices: Cartesian3[] = [];
   private allGeometries: GeometryRecord[] = [];
+  private entityToRecord = new Map<Entity, GeometryRecord>();
+
+  // Callbacks
+  public onDrawingComplete?: (entity: Entity, record: GeometryRecord) => void;
 
   private defaultOptions: DrawOptions = {
     snap: { 
@@ -82,6 +86,33 @@ export class DrawManager {
       this.viewer.entities.remove(this.activeEntity);
     }
     this.teardown();
+  }
+
+  /**
+   * Remove entities from snap data
+   */
+  removeFromSnapData(entities: Entity[]) {
+    entities.forEach(entity => {
+      const record = this.entityToRecord.get(entity);
+      if (record) {
+        // Remove from allGeometries
+        const geomIdx = this.allGeometries.indexOf(record);
+        if (geomIdx >= 0) {
+          this.allGeometries.splice(geomIdx, 1);
+        }
+        
+        // Remove vertices from allVertices
+        const vertsToRemove: Cartesian3[] = [];
+        if (record.positions) vertsToRemove.push(...record.positions);
+        if (record.corners) vertsToRemove.push(...record.corners);
+        if (record.center) vertsToRemove.push(record.center);
+        
+        this.allVertices = this.allVertices.filter(v => !vertsToRemove.includes(v));
+        
+        // Remove from map
+        this.entityToRecord.delete(entity);
+      }
+    });
   }
 
   // Public draw methods
@@ -355,6 +386,10 @@ export class DrawManager {
     opts: DrawOptions,
     onFinish: () => void
   ) {
+    // Skip drawing if Shift is held (allow selection instead)
+    const shiftHeld = (movement as any).shiftKey || (window.event as any)?.shiftKey;
+    if (shiftHeld) return;
+
     const pos = this.getWorldPosition(movement.position);
     if (!pos) return;
 
@@ -623,13 +658,25 @@ export class DrawManager {
       ? positions.slice(0, -1)
       : positions.slice();
 
-    // Store for snapping
-    this.recordGeometry(mode, finalPositions);
+  // Store for snapping and selection mapping
+  const record = this.recordGeometry(mode, finalPositions);
 
     // Cleanup
     this.viewer.entities.remove(previewPoint);
     const entity = this.activeEntity!;
+    
+    // Map entity to record for later removal
+    if (record) {
+      this.entityToRecord.set(entity, record);
+    }
+    
     this.teardown();
+    
+    // Notify that drawing is complete with entity and record
+    if (record && this.onDrawingComplete) {
+      this.onDrawingComplete(entity, record);
+    }
+    
     resolve(entity);
   }
 
@@ -646,21 +693,24 @@ export class DrawManager {
   /**
    * Record completed geometry for future snapping
    */
-  private recordGeometry(mode: DrawMode, positions: Cartesian3[]) {
+  private recordGeometry(mode: DrawMode, positions: Cartesian3[]): GeometryRecord | void {
     try {
       if (!positions || positions.length === 0) return;
 
       switch (mode) {
         case 'point':
           this.allVertices.push(positions[0]);
-          this.allGeometries.push({ kind: 'point', positions: [positions[0]] });
-          break;
+          const rPoint: GeometryRecord = { kind: 'point', positions: [positions[0]] };
+          this.allGeometries.push(rPoint);
+          return rPoint;
 
         case 'polyline':
-        case 'polygon':
+        case 'polygon': {
           this.allVertices.push(...positions);
-          this.allGeometries.push({ kind: mode, positions: positions.slice() });
-          break;
+          const r: GeometryRecord = { kind: mode, positions: positions.slice() } as any;
+          this.allGeometries.push(r);
+          return r;
+        }
 
         case 'rectangle': {
           const c1 = Cartographic.fromCartesian(positions[0]);
@@ -677,8 +727,9 @@ export class DrawManager {
             Cartesian3.fromRadians(east, south, h)
           ];
           this.allVertices.push(...corners);
-          this.allGeometries.push({ kind: 'rectangle', corners });
-          break;
+          const rRect: GeometryRecord = { kind: 'rectangle', corners };
+          this.allGeometries.push(rRect);
+          return rRect;
         }
 
         case 'circle': {
@@ -687,8 +738,9 @@ export class DrawManager {
           const geod = new EllipsoidGeodesic(c1, c2);
           const radiusMeters = Math.max(1, geod.surfaceDistance);
           this.allVertices.push(positions[0]);
-          this.allGeometries.push({ kind: 'circle', center: positions[0], radiusMeters });
-          break;
+          const rCirc: GeometryRecord = { kind: 'circle', center: positions[0], radiusMeters };
+          this.allGeometries.push(rCirc);
+          return rCirc;
         }
       }
     } catch { /* ignore */ }

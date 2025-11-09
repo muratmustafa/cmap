@@ -5,7 +5,7 @@ import { defineCustomElements as defineCalcite } from '@esri/calcite-components/
 import { createViewer } from './viewer/viewerConfig';
 import { setupCmapiHandlers, setupViewChangePublisher } from './cmapi/handlers';
 import { setupCmapiSubscribers } from './cmapi/subscribers';
-import { DrawManager } from './draw/drawManager';
+import { EntityManager } from './entity/entityManager';
 
 declare global {
   interface Window {
@@ -19,31 +19,64 @@ defineCalcite(window);
 const viewer = createViewer('cesiumContainer');
 window.cesiumView = viewer;
 
-const drawManager = new DrawManager(viewer);
+// Initialize EntityManager - coordinates all drawing and selection operations
+const entityManager = new EntityManager(viewer);
 
+// Selection mode activations
+const rectangleSelect = document.getElementById('rectangle-select') as any;
+const lassoSelect = document.getElementById('lasso-select') as any;
+const pointerSelect = document.getElementById('pointer-select') as any;
+
+// Update button states based on selection mode
+const updateSelectionButtons = (mode: 'pointer' | 'rectangle' | 'lasso' | null) => {
+  if (pointerSelect) pointerSelect.active = mode === 'pointer';
+  if (rectangleSelect) rectangleSelect.active = mode === 'rectangle';
+  if (lassoSelect) lassoSelect.active = mode === 'lasso';
+};
+
+// Listen to selection mode changes
+entityManager.onSelectionModeChanged((mode) => {
+  updateSelectionButtons(mode);
+});
+
+pointerSelect?.addEventListener('click', () => {
+  entityManager.enableSelect('pointer');
+});
+
+rectangleSelect?.addEventListener('click', () => {
+  entityManager.enableSelect('rectangle');
+});
+
+lassoSelect?.addEventListener('click', () => {
+  entityManager.enableSelect('lasso');
+});
+
+// Drawing operations
 document.getElementById('draw-point')?.addEventListener('click', async () => {
-  try { await drawManager.drawPoint(); } catch {}
+  try { await entityManager.drawPoint(); } catch {}
 });
 document.getElementById('draw-line')?.addEventListener('click', async () => {
-  try { await drawManager.drawPolyline(); } catch {}
+  try { await entityManager.drawPolyline(); } catch {}
 });
 document.getElementById('draw-polygon')?.addEventListener('click', async () => {
-  try { await drawManager.drawPolygon(); } catch {}
+  try { await entityManager.drawPolygon(); } catch {}
 });
 document.getElementById('draw-rectangle')?.addEventListener('click', async () => {
-  try { await drawManager.drawRectangle(); } catch {}
+  try { await entityManager.drawRectangle(); } catch {}
 });
 document.getElementById('draw-circle')?.addEventListener('click', async () => {
-  try { await drawManager.drawCircle(); } catch {}
+  try { await entityManager.drawCircle(); } catch {}
 });
-document.getElementById('draw-cancel')?.addEventListener('click', () => drawManager.cancel());
+document.getElementById('draw-cancel')?.addEventListener('click', () => { 
+  entityManager.cancelDraw(); 
+});
 
 const snapSwitch = document.getElementById('snap-switch') as any;
 if (snapSwitch) {
   snapSwitch.checked = true;
   snapSwitch.addEventListener('calciteSwitchChange', (e: any) => {
     const enabled = (e.target as any).checked;
-    drawManager.setOptions({ snap: { enabled } });
+    entityManager.setDrawOptions({ snap: { enabled } });
   });
 }
 
@@ -52,7 +85,7 @@ if (autoCloseSwitch) {
   autoCloseSwitch.checked = true;
   autoCloseSwitch.addEventListener('calciteSwitchChange', (e: any) => {
     const enabled = (e.target as any).checked;
-    drawManager.setOptions({ autoClosePolygon: enabled });
+    entityManager.setDrawOptions({ autoClosePolygon: enabled });
   });
 }
 
@@ -60,7 +93,7 @@ const extrudeSlider = document.getElementById('extrude-slider') as any;
 if (extrudeSlider) {
   extrudeSlider.addEventListener('calciteSliderChange', (e: any) => {
     const val = Number((e.target as any).value ?? 0);
-    drawManager.setOptions({ extrudedHeight: val > 0 ? val : undefined });
+    entityManager.setDrawOptions({ extrudedHeight: val > 0 ? val : undefined });
   });
 }
 
